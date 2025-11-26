@@ -59,27 +59,36 @@ init_db()
 
 # ---------------- FUNÇÕES DE IMAGEM ---------------- #
 
-def preprocess_image(img: Image.Image) -> Image.Image:
-    # RGB
+def preprocess_image_for_save(img: Image.Image) -> Image.Image:
     img = img.convert("RGB")
 
-    # redimensiona mantendo proporção (lado máx 800)
     max_side = 800
     w, h = img.size
     scale = min(max_side / max(w, h), 1.0)
     if scale < 1.0:
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
-    # cinza
-    img = ImageOps.grayscale(img)
+    # leve ajuste de brilho/contraste mantendo cor
+    img = ImageEnhance.Brightness(img).enhance(1.05)
+    img = ImageEnhance.Contrast(img).enhance(1.10)
 
-    # autocontraste leve
+    # leve nitidez
+    img = img.filter(ImageFilter.UnsharpMask(radius=1.5, percent=120, threshold=3))
+
+    return img
+
+
+def preprocess_image_for_hash(img: Image.Image) -> Image.Image:
+    img = img.convert("L")
+
+    max_side = 800
+    w, h = img.size
+    scale = min(max_side / max(w, h), 1.0)
+    if scale < 1.0:
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
     img = ImageOps.autocontrast(img, cutoff=2)
-
-    # equalização de histograma (mais detalhe nas texturas)
     img = ImageOps.equalize(img)
-
-    # sharpening (nitidez)
     img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
 
     return img
@@ -95,7 +104,6 @@ def decode_data_url_to_image(data_url: str) -> Image.Image:
 
 
 def save_image(pil_img: Image.Image) -> str:
-    # aqui já espero a imagem TRATADA
     filename = f"chapa_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
     path = os.path.join(IMG_DIR, filename)
     pil_img.save(path, "JPEG", quality=95)
@@ -359,7 +367,7 @@ async function toggleTorchCadastro() {
     if (!tracks || !tracks.length) return;
     const track = tracks[0];
     const caps = track.getCapabilities ? track.getCapabilities() : {};
-    if (!caps.torch) {
+    if (!('torch' in caps)) {
         alert("Lanterna não suportada neste dispositivo.");
         return;
     }
@@ -523,7 +531,7 @@ async function toggleTorchConsulta() {
     if (!tracks || !tracks.length) return;
     const track = tracks[0];
     const caps = track.getCapabilities ? track.getCapabilities() : {};
-    if (!caps.torch) {
+    if (!('torch' in caps)) {
         alert("Lanterna não suportada neste dispositivo.");
         return;
     }
@@ -690,10 +698,12 @@ def api_cadastro():
         return jsonify({"status": "error", "message": "Dados incompletos."}), 400
 
     pil_img = decode_data_url_to_image(image_data)
-    pre = preprocess_image(pil_img)
 
-    img_hash = imagehash.phash(pre)
-    filename = save_image(pre)
+    img_save = preprocess_image_for_save(pil_img)
+    img_hash_base = preprocess_image_for_hash(pil_img)
+
+    img_hash = imagehash.phash(img_hash_base)
+    filename = save_image(img_save)
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = get_conn()
@@ -720,7 +730,7 @@ def api_consulta():
         return jsonify({"status": "error", "message": "Imagem não recebida."}), 400
 
     pil_img = decode_data_url_to_image(image_data)
-    pre = preprocess_image(pil_img)
+    pre = preprocess_image_for_hash(pil_img)
     query_hash = imagehash.phash(pre)
 
     conn = get_conn()
@@ -742,7 +752,6 @@ def api_consulta():
             melhor = row
             melhor_dist = dist
 
-    # mais tolerante
     LIMIAR = 18
 
     if melhor is None or melhor_dist is None or melhor_dist > LIMIAR:
