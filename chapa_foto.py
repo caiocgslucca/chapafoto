@@ -13,7 +13,7 @@ from flask import (
     send_from_directory,
 )
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageFilter, ImageEnhance
 import imagehash
 
 # ---------------- CONFIG BÁSICA ---------------- #
@@ -60,15 +60,27 @@ init_db()
 # ---------------- FUNÇÕES DE IMAGEM ---------------- #
 
 def preprocess_image(img: Image.Image) -> Image.Image:
+    # RGB
     img = img.convert("RGB")
-    img = ImageOps.grayscale(img)
-    img = ImageOps.autocontrast(img)
 
+    # redimensiona mantendo proporção (lado máx 800)
     max_side = 800
     w, h = img.size
     scale = min(max_side / max(w, h), 1.0)
     if scale < 1.0:
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    # cinza
+    img = ImageOps.grayscale(img)
+
+    # autocontraste leve
+    img = ImageOps.autocontrast(img, cutoff=2)
+
+    # equalização de histograma (mais detalhe nas texturas)
+    img = ImageOps.equalize(img)
+
+    # sharpening (nitidez)
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
 
     return img
 
@@ -83,14 +95,14 @@ def decode_data_url_to_image(data_url: str) -> Image.Image:
 
 
 def save_image(pil_img: Image.Image) -> str:
-    pil_img = preprocess_image(pil_img)
+    # aqui já espero a imagem TRATADA
     filename = f"chapa_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
     path = os.path.join(IMG_DIR, filename)
     pil_img.save(path, "JPEG", quality=95)
     return filename
 
 
-# ---------------- HTML TEMPLATES (STRINGS) ---------------- #
+# ---------------- HTML (TUDO INLINE) ---------------- #
 
 BASE_HTML_HEAD = """
 <!DOCTYPE html>
@@ -126,7 +138,6 @@ BASE_HTML_HEAD = """
             font-size: 0.9rem;
         }
         nav a:hover { text-decoration: underline; }
-
         main { padding: 16px; }
 
         .home-cards {
@@ -297,6 +308,7 @@ CADASTRO_HTML = (
 
 <div class="btn-row">
     <button id="btnCapturarCadastro">Capturar</button>
+    <button id="btnLuzCadastro" type="button">Luz On/Off</button>
 </div>
 
 <div id="previewCadastro" class="preview" style="display:none;">
@@ -324,6 +336,7 @@ CADASTRO_HTML = (
 <script>
 let streamCadastro = null;
 let capturedDataUrlCadastro = null;
+let torchOnCadastro = false;
 
 async function initCameraCadastro() {
     try {
@@ -340,6 +353,25 @@ async function initCameraCadastro() {
     }
 }
 
+async function toggleTorchCadastro() {
+    if (!streamCadastro) return;
+    const tracks = streamCadastro.getVideoTracks();
+    if (!tracks || !tracks.length) return;
+    const track = tracks[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (!caps.torch) {
+        alert("Lanterna não suportada neste dispositivo.");
+        return;
+    }
+    torchOnCadastro = !torchOnCadastro;
+    try {
+        await track.applyConstraints({ advanced: [{ torch: torchOnCadastro }] });
+    } catch (e) {
+        console.log("Erro torch:", e);
+        alert("Não foi possível controlar a lanterna.");
+    }
+}
+
 function capturarFotoCadastro() {
     const video = document.getElementById("videoCadastro");
     const canvas = document.getElementById("canvasCadastro");
@@ -353,7 +385,7 @@ function capturarFotoCadastro() {
     const ctx = canvas.getContext("2d");
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    capturedDataUrlCadastro = canvas.toDataURL("image/jpeg", 0.9);
+    capturedDataUrlCadastro = canvas.toDataURL("image/jpeg", 0.95);
     imgPreview.src = capturedDataUrlCadastro;
     previewDiv.style.display = "block";
 
@@ -367,6 +399,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnUsarFoto = document.getElementById("btnUsarFoto");
     const btnNovaFoto = document.getElementById("btnNovaFoto");
     const btnCancelar = document.getElementById("btnCancelarCadastro");
+    const btnLuz = document.getElementById("btnLuzCadastro");
     const form = document.getElementById("formCadastro");
     const msg = document.getElementById("msgCadastro");
 
@@ -392,6 +425,10 @@ document.addEventListener("DOMContentLoaded", () => {
         form.style.display = "none";
         msg.textContent = "Cadastro cancelado.";
         msg.className = "msg";
+    });
+
+    btnLuz.addEventListener("click", () => {
+        toggleTorchCadastro();
     });
 
     form.addEventListener("submit", async (e) => {
@@ -448,6 +485,7 @@ CONSULTA_HTML = (
 
 <div class="btn-row">
     <button id="btnCapturarConsulta">Capturar e Buscar</button>
+    <button id="btnLuzConsulta" type="button">Luz On/Off</button>
 </div>
 
 <div id="resultadoConsulta" class="resultado" style="display:none;"></div>
@@ -462,6 +500,7 @@ CONSULTA_HTML = (
 
 <script>
 let streamConsulta = null;
+let torchOnConsulta = false;
 
 async function initCameraConsulta() {
     try {
@@ -478,6 +517,25 @@ async function initCameraConsulta() {
     }
 }
 
+async function toggleTorchConsulta() {
+    if (!streamConsulta) return;
+    const tracks = streamConsulta.getVideoTracks();
+    if (!tracks || !tracks.length) return;
+    const track = tracks[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (!caps.torch) {
+        alert("Lanterna não suportada neste dispositivo.");
+        return;
+    }
+    torchOnConsulta = !torchOnConsulta;
+    try {
+        await track.applyConstraints({ advanced: [{ torch: torchOnConsulta }] });
+    } catch (e) {
+        console.log("Erro torch:", e);
+        alert("Não foi possível controlar a lanterna.");
+    }
+}
+
 function capturarDataUrlConsulta() {
     const video = document.getElementById("videoConsulta");
     const canvas = document.getElementById("canvasConsulta");
@@ -489,7 +547,7 @@ function capturarDataUrlConsulta() {
     const ctx = canvas.getContext("2d");
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    return canvas.toDataURL("image/jpeg", 0.9);
+    return canvas.toDataURL("image/jpeg", 0.95);
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -499,6 +557,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const resultadoDiv = document.getElementById("resultadoConsulta");
     const acaoCadastrarDiv = document.getElementById("acaoCadastrar");
     const btnNaoCadastrar = document.getElementById("btnNaoCadastrar");
+    const btnLuz = document.getElementById("btnLuzConsulta");
 
     btnCapturar.addEventListener("click", async () => {
         const dataUrl = capturarDataUrlConsulta();
@@ -537,6 +596,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     btnNaoCadastrar.addEventListener("click", () => {
         acaoCadastrarDiv.style.display = "none";
+    });
+
+    btnLuz.addEventListener("click", () => {
+        toggleTorchConsulta();
     });
 });
 </script>
@@ -679,7 +742,8 @@ def api_consulta():
             melhor = row
             melhor_dist = dist
 
-    LIMIAR = 10
+    # mais tolerante
+    LIMIAR = 18
 
     if melhor is None or melhor_dist is None or melhor_dist > LIMIAR:
         return jsonify({"status": "not_found"})
