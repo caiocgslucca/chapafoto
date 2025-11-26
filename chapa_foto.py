@@ -60,6 +60,7 @@ init_db()
 # ---------------- FUNÇÕES DE IMAGEM ---------------- #
 
 def preprocess_image_for_save(img: Image.Image) -> Image.Image:
+    # mantém cor, só dá uma leve melhorada e reduz tamanho
     img = img.convert("RGB")
 
     max_side = 800
@@ -68,28 +69,33 @@ def preprocess_image_for_save(img: Image.Image) -> Image.Image:
     if scale < 1.0:
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
-    # leve ajuste de brilho/contraste mantendo cor
     img = ImageEnhance.Brightness(img).enhance(1.05)
     img = ImageEnhance.Contrast(img).enhance(1.10)
-
-    # leve nitidez
     img = img.filter(ImageFilter.UnsharpMask(radius=1.5, percent=120, threshold=3))
 
     return img
 
 
 def preprocess_image_for_hash(img: Image.Image) -> Image.Image:
-    img = img.convert("L")
-
-    max_side = 800
+    # foco no miolo da chapa: cor + textura; ignora bordas/sombra
+    img = img.convert("RGB")
     w, h = img.size
-    scale = min(max_side / max(w, h), 1.0)
-    if scale < 1.0:
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
+    # crop central quadrado
+    side = min(w, h)
+    left = (w - side) // 2
+    top = (h - side) // 2
+    img = img.crop((left, top, left + side, top + side))
+
+    # reduz small variação mas mantém textura
+    img = img.resize((400, 400), Image.LANCZOS)
+    img = ImageEnhance.Brightness(img).enhance(1.05)
+    img = ImageEnhance.Contrast(img).enhance(1.10)
+
+    # converte pra cinza pra phash (mas com textura já destacada)
+    img = ImageOps.grayscale(img)
     img = ImageOps.autocontrast(img, cutoff=2)
-    img = ImageOps.equalize(img)
-    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+    img = img.filter(ImageFilter.UnsharpMask(radius=1.5, percent=120, threshold=3))
 
     return img
 
@@ -345,6 +351,7 @@ CADASTRO_HTML = (
 let streamCadastro = null;
 let capturedDataUrlCadastro = null;
 let torchOnCadastro = false;
+let torchSuportadaCadastro = true;
 
 async function initCameraCadastro() {
     try {
@@ -362,21 +369,19 @@ async function initCameraCadastro() {
 }
 
 async function toggleTorchCadastro() {
-    if (!streamCadastro) return;
+    if (!streamCadastro || !torchSuportadaCadastro) return;
     const tracks = streamCadastro.getVideoTracks();
     if (!tracks || !tracks.length) return;
     const track = tracks[0];
-    const caps = track.getCapabilities ? track.getCapabilities() : {};
-    if (!('torch' in caps)) {
-        alert("Lanterna não suportada neste dispositivo.");
-        return;
-    }
-    torchOnCadastro = !torchOnCadastro;
+
     try {
-        await track.applyConstraints({ advanced: [{ torch: torchOnCadastro }] });
+        const novoEstado = !torchOnCadastro;
+        await track.applyConstraints({ advanced: [{ torch: novoEstado }] });
+        torchOnCadastro = novoEstado;
     } catch (e) {
         console.log("Erro torch:", e);
-        alert("Não foi possível controlar a lanterna.");
+        alert("Lanterna não suportada neste dispositivo.");
+        torchSuportadaCadastro = false;
     }
 }
 
@@ -509,6 +514,7 @@ CONSULTA_HTML = (
 <script>
 let streamConsulta = null;
 let torchOnConsulta = false;
+let torchSuportadaConsulta = true;
 
 async function initCameraConsulta() {
     try {
@@ -526,21 +532,19 @@ async function initCameraConsulta() {
 }
 
 async function toggleTorchConsulta() {
-    if (!streamConsulta) return;
+    if (!streamConsulta || !torchSuportadaConsulta) return;
     const tracks = streamConsulta.getVideoTracks();
     if (!tracks || !tracks.length) return;
     const track = tracks[0];
-    const caps = track.getCapabilities ? track.getCapabilities() : {};
-    if (!('torch' in caps)) {
-        alert("Lanterna não suportada neste dispositivo.");
-        return;
-    }
-    torchOnConsulta = !torchOnConsulta;
+
     try {
-        await track.applyConstraints({ advanced: [{ torch: torchOnConsulta }] });
+        const novoEstado = !torchOnConsulta;
+        await track.applyConstraints({ advanced: [{ torch: novoEstado }] });
+        torchOnConsulta = novoEstado;
     } catch (e) {
         console.log("Erro torch:", e);
-        alert("Não foi possível controlar a lanterna.");
+        alert("Lanterna não suportada neste dispositivo.");
+        torchSuportadaConsulta = false;
     }
 }
 
@@ -752,7 +756,8 @@ def api_consulta():
             melhor = row
             melhor_dist = dist
 
-    LIMIAR = 18
+    # mais tolerante para ângulos diferentes, focando textura/tonalidade
+    LIMIAR = 24
 
     if melhor is None or melhor_dist is None or melhor_dist > LIMIAR:
         return jsonify({"status": "not_found"})
