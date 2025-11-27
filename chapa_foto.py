@@ -50,6 +50,16 @@ def init_db():
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chapa_hashes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chapa_id INTEGER NOT NULL,
+            image_hash TEXT NOT NULL,
+            FOREIGN KEY (chapa_id) REFERENCES chapas(id)
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -60,7 +70,7 @@ init_db()
 # ---------------- FUNÇÕES DE IMAGEM ---------------- #
 
 def preprocess_image_for_save(img: Image.Image) -> Image.Image:
-    # mantém cor, só dá uma leve melhorada e reduz tamanho
+    # mantém cor, só reduz tamanho e melhora leve brilho/contraste
     img = img.convert("RGB")
 
     max_side = 800
@@ -77,22 +87,19 @@ def preprocess_image_for_save(img: Image.Image) -> Image.Image:
 
 
 def preprocess_image_for_hash(img: Image.Image) -> Image.Image:
-    # foco no miolo da chapa: cor + textura; ignora bordas/sombra
+    # foca no miolo da chapa (cor + textura), ignora bordas/sombra
     img = img.convert("RGB")
     w, h = img.size
 
-    # crop central quadrado
     side = min(w, h)
     left = (w - side) // 2
     top = (h - side) // 2
     img = img.crop((left, top, left + side, top + side))
 
-    # reduz small variação mas mantém textura
     img = img.resize((400, 400), Image.LANCZOS)
     img = ImageEnhance.Brightness(img).enhance(1.05)
     img = ImageEnhance.Contrast(img).enhance(1.10)
 
-    # converte pra cinza pra phash (mas com textura já destacada)
     img = ImageOps.grayscale(img)
     img = ImageOps.autocontrast(img, cutoff=2)
     img = img.filter(ImageFilter.UnsharpMask(radius=1.5, percent=120, threshold=3))
@@ -297,11 +304,11 @@ HOME_HTML = (
 <div class="home-cards">
     <a class="card" href="{{ url_for('cadastro_page') }}">
         <h2>Cadastrar Chapa</h2>
-        <p>Fotografar chapa MDF e salvar com SKU e descrição.</p>
+        <p>Gravar vídeo de 5s em vários ângulos e salvar com SKU e descrição.</p>
     </a>
     <a class="card" href="{{ url_for('consulta_page') }}">
         <h2>Consultar Chapa</h2>
-        <p>Apontar para a chapa e buscar no cadastro.</p>
+        <p>Tirar uma foto da chapa e buscar no cadastro.</p>
     </a>
     <a class="card" href="{{ url_for('cadastrados_page') }}">
         <h2>Chapas Cadastradas</h2>
@@ -315,23 +322,19 @@ HOME_HTML = (
 CADASTRO_HTML = (
     BASE_HTML_HEAD
     + """
-<h2>Cadastrar Chapa MDF</h2>
+<h2>Cadastrar Chapa MDF (vídeo 5s)</h2>
 
 <video id="videoCadastro" autoplay playsinline></video>
 <canvas id="canvasCadastro"></canvas>
 
 <div class="btn-row">
-    <button id="btnCapturarCadastro">Capturar</button>
+    <button id="btnGravarCadastro">Gravar vídeo 5s</button>
     <button id="btnLuzCadastro" type="button">Luz On/Off</button>
 </div>
 
 <div id="previewCadastro" class="preview" style="display:none;">
-    <h3>Pré-visualização</h3>
-    <img id="imgPreviewCadastro" alt="Foto da chapa">
-    <div class="btn-row">
-        <button id="btnUsarFoto">OK (usar foto)</button>
-        <button id="btnNovaFoto">Gerar outra</button>
-    </div>
+    <h3>Pré-visualização (frame do vídeo)</h3>
+    <img id="imgPreviewCadastro" alt="Frame da chapa">
 </div>
 
 <form id="formCadastro" style="display:none;">
@@ -349,7 +352,7 @@ CADASTRO_HTML = (
 
 <script>
 let streamCadastro = null;
-let capturedDataUrlCadastro = null;
+let framesCadastro = [];
 let torchOnCadastro = false;
 let torchSuportadaCadastro = true;
 
@@ -385,57 +388,80 @@ async function toggleTorchCadastro() {
     }
 }
 
-function capturarFotoCadastro() {
+function gravarVideoCadastro() {
     const video = document.getElementById("videoCadastro");
     const canvas = document.getElementById("canvasCadastro");
+    const msg = document.getElementById("msgCadastro");
     const previewDiv = document.getElementById("previewCadastro");
     const imgPreview = document.getElementById("imgPreviewCadastro");
+    const form = document.getElementById("formCadastro");
 
-    if (!video.videoWidth) return;
+    if (!video.videoWidth) {
+        msg.textContent = "Vídeo não está pronto, aguarde um pouco e tente de novo.";
+        msg.className = "msg error";
+        return;
+    }
+
+    framesCadastro = [];
+    msg.textContent = "Gravando 5 segundos... mova o celular em volta da chapa.";
+    msg.className = "msg";
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    capturedDataUrlCadastro = canvas.toDataURL("image/jpeg", 0.95);
-    imgPreview.src = capturedDataUrlCadastro;
-    previewDiv.style.display = "block";
+    const durationMs = 5000;
+    const intervalMs = 400; // ~12 frames
+    let elapsed = 0;
 
-    document.getElementById("formCadastro").style.display = "none";
+    function captureFrame() {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        framesCadastro.push(dataUrl);
+    }
+
+    captureFrame();
+
+    const intervalId = setInterval(() => {
+        elapsed += intervalMs;
+        captureFrame();
+        if (elapsed >= durationMs) {
+            clearInterval(intervalId);
+            if (framesCadastro.length > 0) {
+                const mid = Math.floor(framesCadastro.length / 2);
+                imgPreview.src = framesCadastro[mid];
+                previewDiv.style.display = "block";
+                form.style.display = "block";
+                msg.textContent = "Vídeo capturado. Preencha os dados e salve.";
+                msg.className = "msg success";
+            } else {
+                msg.textContent = "Não foi possível capturar o vídeo.";
+                msg.className = "msg error";
+            }
+        }
+    }, intervalMs);
 }
 
 document.addEventListener("DOMContentLoaded", () => {
     initCameraCadastro();
 
-    const btnCapturar = document.getElementById("btnCapturarCadastro");
-    const btnUsarFoto = document.getElementById("btnUsarFoto");
-    const btnNovaFoto = document.getElementById("btnNovaFoto");
+    const btnGravar = document.getElementById("btnGravarCadastro");
     const btnCancelar = document.getElementById("btnCancelarCadastro");
     const btnLuz = document.getElementById("btnLuzCadastro");
     const form = document.getElementById("formCadastro");
     const msg = document.getElementById("msgCadastro");
 
-    btnCapturar.addEventListener("click", () => {
-        capturarFotoCadastro();
+    btnGravar.addEventListener("click", () => {
+        gravarVideoCadastro();
         msg.textContent = "";
         msg.className = "msg";
-    });
-
-    btnUsarFoto.addEventListener("click", () => {
-        if (!capturedDataUrlCadastro) return;
-        form.style.display = "block";
-    });
-
-    btnNovaFoto.addEventListener("click", () => {
-        capturedDataUrlCadastro = null;
-        document.getElementById("previewCadastro").style.display = "none";
-        form.style.display = "none";
     });
 
     btnCancelar.addEventListener("click", () => {
         form.reset();
         form.style.display = "none";
+        document.getElementById("previewCadastro").style.display = "none";
+        framesCadastro = [];
         msg.textContent = "Cadastro cancelado.";
         msg.className = "msg";
     });
@@ -446,8 +472,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
     form.addEventListener("submit", async (e) => {
         e.preventDefault();
-        if (!capturedDataUrlCadastro) {
-            msg.textContent = "Capture e confirme a foto primeiro.";
+        if (!framesCadastro.length) {
+            msg.textContent = "Grave o vídeo de 5s antes de salvar.";
             msg.className = "msg error";
             return;
         }
@@ -458,7 +484,7 @@ document.addEventListener("DOMContentLoaded", () => {
             msg.className = "msg error";
             return;
         }
-        const payload = { image: capturedDataUrlCadastro, sku, descricao };
+        const payload = { frames: framesCadastro, sku, descricao };
         try {
             const resp = await fetch("{{ url_for('api_cadastro') }}", {
                 method: "POST",
@@ -472,7 +498,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 form.reset();
                 form.style.display = "none";
                 document.getElementById("previewCadastro").style.display = "none";
-                capturedDataUrlCadastro = null;
+                framesCadastro = [];
             } else {
                 msg.textContent = data.message || "Erro ao cadastrar.";
                 msg.className = "msg error";
@@ -491,7 +517,7 @@ document.addEventListener("DOMContentLoaded", () => {
 CONSULTA_HTML = (
     BASE_HTML_HEAD
     + """
-<h2>Consultar Chapa MDF</h2>
+<h2>Consultar Chapa MDF (foto única)</h2>
 
 <video id="videoConsulta" autoplay playsinline></video>
 <canvas id="canvasConsulta"></canvas>
@@ -694,20 +720,41 @@ def chapa_image(filename):
 @app.route("/api/cadastro", methods=["POST"])
 def api_cadastro():
     data = request.get_json(force=True)
-    image_data = data.get("image")
+    frames = data.get("frames")
     sku = data.get("sku", "").strip()
     descricao = data.get("descricao", "").strip()
 
-    if not image_data or not sku or not descricao:
+    if not frames or not isinstance(frames, list) or not sku or not descricao:
         return jsonify({"status": "error", "message": "Dados incompletos."}), 400
 
-    pil_img = decode_data_url_to_image(image_data)
+    # usa o frame do meio como imagem de referência pra salvar
+    mid_index = len(frames) // 2
+    frame_preview = frames[mid_index]
 
-    img_save = preprocess_image_for_save(pil_img)
-    img_hash_base = preprocess_image_for_hash(pil_img)
+    try:
+        pil_preview = decode_data_url_to_image(frame_preview)
+    except Exception:
+        return jsonify({"status": "error", "message": "Erro ao ler frame do vídeo."}), 400
 
-    img_hash = imagehash.phash(img_hash_base)
+    img_save = preprocess_image_for_save(pil_preview)
     filename = save_image(img_save)
+
+    # gera hash de todos os frames para textura/cor
+    hashes = []
+    for f in frames:
+        try:
+            pil = decode_data_url_to_image(f)
+            pre = preprocess_image_for_hash(pil)
+            h = imagehash.phash(pre)
+            hashes.append(str(h))
+        except Exception:
+            continue
+
+    if not hashes:
+        return jsonify({"status": "error", "message": "Não foi possível gerar hashes do vídeo."}), 400
+
+    # também guarda um hash "principal" na tabela chapas (por compatibilidade)
+    img_hash_principal = hashes[0]
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = get_conn()
@@ -717,8 +764,16 @@ def api_cadastro():
         INSERT INTO chapas (sku, descricao, image_filename, image_hash, created_at)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (sku, descricao, filename, str(img_hash), created_at),
+        (sku, descricao, filename, img_hash_principal, created_at),
     )
+    chapa_id = cur.lastrowid
+
+    for h in hashes:
+        cur.execute(
+            "INSERT INTO chapa_hashes (chapa_id, image_hash) VALUES (?, ?)",
+            (chapa_id, h),
+        )
+
     conn.commit()
     conn.close()
 
@@ -739,7 +794,18 @@ def api_consulta():
 
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM chapas")
+    cur.execute(
+        """
+        SELECT c.id AS chapa_id,
+               c.sku,
+               c.descricao,
+               c.image_filename,
+               c.created_at,
+               h.image_hash AS frame_hash
+        FROM chapas c
+        JOIN chapa_hashes h ON h.chapa_id = c.id
+        """
+    )
     rows = cur.fetchall()
     conn.close()
 
@@ -748,7 +814,7 @@ def api_consulta():
 
     for row in rows:
         try:
-            h_db = imagehash.hex_to_hash(row["image_hash"])
+            h_db = imagehash.hex_to_hash(row["frame_hash"])
         except Exception:
             continue
         dist = query_hash - h_db
@@ -756,7 +822,7 @@ def api_consulta():
             melhor = row
             melhor_dist = dist
 
-    # mais tolerante para ângulos diferentes, focando textura/tonalidade
+    # mais tolerante, já que temos vários frames por chapa
     LIMIAR = 24
 
     if melhor is None or melhor_dist is None or melhor_dist > LIMIAR:
@@ -770,7 +836,7 @@ def api_consulta():
             "sku": melhor["sku"],
             "descricao": melhor["descricao"],
             "image_url": image_url,
-            "id": melhor["id"],
+            "id": melhor["chapa_id"],
             "distancia": int(melhor_dist),
         }
     )
